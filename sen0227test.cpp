@@ -69,7 +69,7 @@ float read_humidity(void) {
 
 // ================= Stepper + Heater =================
 
-// From your schematic notes:
+// From schematic notes:
 //
 // GPIO11 – pull low to enable pump (TB6600 ENA-)
 // GPIO10 – pull low to enable heater (HeatSwitch gate driver)
@@ -140,6 +140,47 @@ void set_heater(bool on) {
     gpio_put(PIN_HEAT_SWITCH, on ? 0 : 1);  // active LOW
 }
 
+// ================= Pump H-Bridge (DRV8871) =================
+// From your PCB pinout
+#define PIN_PUMP_IN1  12   // MotorIn1
+#define PIN_PUMP_IN2  13   // MotorIn2
+
+enum PumpMode {
+    PUMP_COAST = 0,   // IN1=0 IN2=0 (Hi-Z / sleep)
+    PUMP_FORWARD,     // IN1=1 IN2=0
+    PUMP_REVERSE,     // IN1=0 IN2=1
+    PUMP_BRAKE        // IN1=1 IN2=1
+};
+
+void pump_set_mode(PumpMode mode) {
+    switch (mode) {
+        case PUMP_COAST:
+            gpio_put(PIN_PUMP_IN1, 0);
+            gpio_put(PIN_PUMP_IN2, 0);
+            break;
+        case PUMP_FORWARD:
+            gpio_put(PIN_PUMP_IN1, 1);
+            gpio_put(PIN_PUMP_IN2, 0);
+            break;
+        case PUMP_REVERSE:
+            gpio_put(PIN_PUMP_IN1, 0);
+            gpio_put(PIN_PUMP_IN2, 1);
+            break;
+        case PUMP_BRAKE:
+            gpio_put(PIN_PUMP_IN1, 1);
+            gpio_put(PIN_PUMP_IN2, 1);
+            break;
+    }
+}
+
+// Simple boolean interface (ROS-friendly)
+void pump_set_enabled(bool enabled, bool forward) {
+    if (!enabled) {
+        pump_set_mode(PUMP_COAST);
+    } else {
+        pump_set_mode(forward ? PUMP_FORWARD : PUMP_REVERSE);
+    }
+}
 
 // ================= main =================
 
@@ -166,6 +207,16 @@ int main() {
     gpio_set_dir(PIN_STEP_DIR, GPIO_OUT);
     gpio_set_dir(PIN_STEP_PULSE, GPIO_OUT);
     gpio_set_dir(PIN_HEAT_SWITCH, GPIO_OUT);
+
+        // ---- GPIO init for pump H-bridge ----
+gpio_init(PIN_PUMP_IN1);
+gpio_init(PIN_PUMP_IN2);
+gpio_set_dir(PIN_PUMP_IN1, GPIO_OUT);
+gpio_set_dir(PIN_PUMP_IN2, GPIO_OUT);
+
+// Default pump state
+pump_set_mode(PUMP_COAST);
+
 
     // Idle states
     set_stepper_enabled(false);
@@ -194,4 +245,6 @@ int main() {
 
         sleep_ms(1000);
     }
+
+
 }
