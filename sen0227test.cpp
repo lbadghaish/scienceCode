@@ -67,63 +67,93 @@ float read_humidity(void) {
 }
 
 // =====================================================
-// Stepper (TB6600) + Heater pins from KiCad
+// STEPPER MOTOR FSM (YOUR WORKING CODE)
 // =====================================================
-// KiCad nets:
-// Pull(PWM)  -> GPIO8
-// Direction+ -> GPIO9
-// PumpEnable -> GPIO11 (active LOW enable)
-// HeatSwitch -> GPIO10 (active LOW heater ON)
+// GPIO Pin Definitions
+#define PUL_PIN 8   // PUL/PWM connected to GPIO 8 (TB6600 PUL)
+#define DIR_PIN 9   // DIR connected to GPIO 9 (TB6600 DIR)
 
-#define PIN_STEP_PULSE    8   // GPIO8  (pin 11)  TB6600 PUL
-#define PIN_STEP_DIR      9   // GPIO9  (pin 12)  TB6600 DIR
-#define PIN_STEP_ENABLE  11   // GPIO11 (pin 15)  TB6600 ENA (active LOW)
+// FSM States
+typedef enum {
+    STATE_OFF,
+    STATE_UP,
+    STATE_DOWN
+} MotorState;
 
-#define PIN_HEAT_SWITCH  10   // GPIO10 (pin 14)  active LOW = heater ON
+// Global state variable
+MotorState current_state = STATE_OFF;
 
-// Stepper timing
-#define MAX_STEP_DELAY_US    5000
-#define MIN_STEP_DELAY_US     500
-#define STEP_PULSE_WIDTH_US    10
-
-static uint32_t speed_percent_to_delay_us(float speed_percent) {
-    if (speed_percent <= 0.0f)  return 0;
-    if (speed_percent > 100.0f) speed_percent = 100.0f;
-
-    float p = speed_percent / 100.0f;
-    float delay_f =
-        (float)MAX_STEP_DELAY_US -
-        p * (float)(MAX_STEP_DELAY_US - MIN_STEP_DELAY_US);
-
-    if (delay_f < (float)MIN_STEP_DELAY_US) delay_f = (float)MIN_STEP_DELAY_US;
-    return (uint32_t)delay_f;
+// Function to initialize GPIO pins
+void init_stepper_pins() {
+    gpio_init(PUL_PIN);
+    gpio_init(DIR_PIN);
+    gpio_set_dir(PUL_PIN, GPIO_OUT);
+    gpio_set_dir(DIR_PIN, GPIO_OUT);
+    
+    // Initialize outputs to LOW
+    gpio_put(PUL_PIN, 0);
+    gpio_put(DIR_PIN, 0);
 }
 
-void set_stepper_direction(bool up) {
-    gpio_put(PIN_STEP_DIR, up ? 1 : 0);
-}
-
-void set_stepper_enabled(bool enabled) {
-    // Active LOW enable per your notes
-    gpio_put(PIN_STEP_ENABLE, enabled ? 0 : 1);
-}
-
-void stepper_move_steps(int32_t steps, float speed_percent, bool direction_up) {
-    if (steps <= 0) return;
-
-    uint32_t delay_us = speed_percent_to_delay_us(speed_percent);
-    if (delay_us == 0) return;
-
-    set_stepper_direction(direction_up);
-    set_stepper_enabled(true);
-
-    for (int32_t i = 0; i < steps; ++i) {
-        gpio_put(PIN_STEP_PULSE, 1);
-        sleep_us(STEP_PULSE_WIDTH_US);
-        gpio_put(PIN_STEP_PULSE, 0);
+// Function to generate step pulses
+void step_motor(uint32_t steps, uint32_t delay_us) {
+    for (uint32_t i = 0; i < steps; i++) {
+        gpio_put(PUL_PIN, 1);
+        sleep_us(delay_us);
+        gpio_put(PUL_PIN, 0);
         sleep_us(delay_us);
     }
 }
+
+// Function to set motor direction
+void set_stepper_direction(bool dir) {
+    gpio_put(DIR_PIN, dir);
+}
+
+// FSM state handler
+void handle_motor_state() {
+    switch (current_state) {
+        case STATE_OFF:
+            // Motor is stopped, do nothing
+            printf("Motor State: OFF\n");
+            break;
+            
+        case STATE_UP:
+            printf("Motor State: UP - Moving motor up\n");
+            set_stepper_direction(1);  // HIGH for one direction
+            step_motor(2000, 200);  // 2000 steps, 200us pulse width
+            break;
+            
+        case STATE_DOWN:
+            printf("Motor State: DOWN - Moving motor down\n");
+            set_stepper_direction(0);  // LOW for opposite direction
+            step_motor(2000, 200);  // 2000 steps, 200us pulse width
+            break;
+    }
+}
+
+// Example function to change states (you can modify this based on your needs)
+void update_stepper_state() {
+    static uint32_t counter = 0;
+    counter++;
+    
+    // Example: Cycle through states every few iterations
+    // Replace this with your actual state transition logic
+    // (buttons, sensors, serial commands, etc.)
+    
+    if (counter % 30 == 0) {
+        current_state = STATE_UP;
+    } else if (counter % 30 == 10) {
+        current_state = STATE_DOWN;
+    } else if (counter % 30 == 20) {
+        current_state = STATE_OFF;
+    }
+}
+
+// =====================================================
+// HEATER CONTROL
+// =====================================================
+#define PIN_HEAT_SWITCH  10   // GPIO10 (pin 14)  active LOW = heater ON
 
 // Heater: pull HeatSwitch LOW to turn on heater
 void set_heater(bool on) {
@@ -147,10 +177,10 @@ enum PumpMode {
     PUMP_BRAKE        // IN1=1 IN2=1
 };
 
-// NOTE: I matched your truth table exactly:
+// NOTE: Matched truth table exactly:
 // Forward  = IN1=1 IN2=0
 // Reverse  = IN1=0 IN2=1
-void pump_set_mode(PumpMode mode) {
+void pump_set_mode(enum PumpMode mode) {
     switch (mode) {
         case PUMP_COAST:
             gpio_put(PIN_PUMP_IN1, 0);
@@ -185,13 +215,14 @@ void pump_set_enabled(bool enabled, bool forward) {
 }
 
 // =====================================================
-// main
+// MAIN
 // =====================================================
 int main() {
     stdio_init_all();
     sleep_ms(2000);
 
-    printf("Hello from Science PCB!\n");
+    printf("Science PCB with FSM Stepper Control\n");
+    printf("=====================================\n");
 
     // ---- I2C init ----
     i2c_init(I2C_PORT, 100 * 1000);
@@ -200,19 +231,13 @@ int main() {
     gpio_pull_up(I2C_SDA);
     gpio_pull_up(I2C_SCL);
 
-    // ---- Stepper + heater GPIO init ----
-    gpio_init(PIN_STEP_ENABLE);
-    gpio_init(PIN_STEP_DIR);
-    gpio_init(PIN_STEP_PULSE);
+    // ---- Stepper GPIO init (using your working code) ----
+    init_stepper_pins();
+    printf("Stepper motor initialized on GPIO %d (PUL) and GPIO %d (DIR)\n", PUL_PIN, DIR_PIN);
+
+    // ---- Heater GPIO init ----
     gpio_init(PIN_HEAT_SWITCH);
-
-    gpio_set_dir(PIN_STEP_ENABLE, GPIO_OUT);
-    gpio_set_dir(PIN_STEP_DIR, GPIO_OUT);
-    gpio_set_dir(PIN_STEP_PULSE, GPIO_OUT);
     gpio_set_dir(PIN_HEAT_SWITCH, GPIO_OUT);
-
-    set_stepper_enabled(false);
-    gpio_put(PIN_STEP_PULSE, 0);
     set_heater(false);
 
     // ---- Pump H-bridge GPIO init ----
@@ -225,17 +250,25 @@ int main() {
     // Optional: scan I2C at startup
     i2c_scan();
 
+    printf("\nStarting main loop...\n\n");
+
     while (true) {
+        // Read temperature and humidity
         float t = read_temperature();
         float h = read_humidity();
-        printf("Temp: %.2f C, Hum: %.2f %%\n", t, h);
+        printf("Temp: %.2f C, Hum: %.2f %% | ", t, h);
 
-        // --- quick pump direction test (optional) ---
-        // pump_set_enabled(true, true);   // forward
-        // sleep_ms(1000);
-        // pump_set_enabled(true, false);  // reverse
-        // sleep_ms(1000);
-        // pump_set_enabled(false, true);  // coast/off
+        // Update and handle stepper motor state
+        update_stepper_state();
+        handle_motor_state();
+
+        // Optional: You can add pump or heater control here based on conditions
+        // Example:
+        // if (t > 30.0f) {
+        //     set_heater(false);  // Turn off heater if too hot
+        // } else if (t < 20.0f) {
+        //     set_heater(true);   // Turn on heater if too cold
+        // }
 
         sleep_ms(1000);
     }
