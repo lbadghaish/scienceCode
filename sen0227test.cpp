@@ -290,7 +290,7 @@ int main() {
                 break;
 
             case SYS_IDLE:
-                // Here you would normally check for updated commands (ROS/serial/etc.)
+                // Here check for updated commands (ROS/serial/etc.)
                 // For now, "user_choice" is already the command source.
 
                 // Sensor schedule
@@ -304,7 +304,7 @@ int main() {
             case SYS_READ_SENSORS:
                 sensors_update();
 
-                // Print occasionally (you can remove prints later)
+                // Print occasionally
                 printf("Temp: %.2f C, Hum: %.2f %%\n", sensors.temperature_c, sensors.humidity_pct);
 
                 // Schedule next read
@@ -316,9 +316,9 @@ int main() {
             case SYS_APPLY_OUTPUTS:
                 // ----- Apply user choice to outputs -----
 
-                // Stepper: map choice -> your stepper state machine
+                // Stepper: map choice -> stepper state machine
                 current_state = user_choice.stepper_state;
-                handle_motor_state();  // uses your working stepper logic
+                handle_motor_state();  // uses working stepper logic
 
                 // Pump H-bridge:
                 pump_set_enabled(user_choice.pump_enabled, user_choice.pump_forward);
@@ -329,7 +329,7 @@ int main() {
                 // Go back to idle
                 sys_state = SYS_IDLE;
 
-                // Small sleep to reduce CPU use (does not affect your stepper logic inside handle_motor_state)
+                // Small sleep to reduce CPU use
                 sleep_ms(10);
                 break;
 
