@@ -67,7 +67,7 @@ float read_humidity(void) {
 }
 
 // =====================================================
-// STEPPER MOTOR FSM (KEEPING YOUR WORKING CODE)
+// STEPPER MOTOR FSM
 // =====================================================
 // GPIO Pin Definitions
 #define PUL_PIN 8   // PUL/PWM connected to GPIO 8 (TB6600 PUL)
@@ -110,7 +110,7 @@ void set_stepper_direction(bool dir) {
     gpio_put(DIR_PIN, dir);
 }
 
-// FSM state handler (your logic)
+// FSM state handler
 void handle_motor_state() {
     switch (current_state) {
         case STATE_OFF:
