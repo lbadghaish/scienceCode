@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/i2c.h"
+#include "hardware/pwm.h"
+#include <math.h>
 
 // =====================================================
 // I2C (Soil / SHT20)
@@ -202,24 +204,135 @@ void pump_test_service(void) {
 }
 
 // =====================================================
-// HEATER MOSFET TEST (TIME-BASED, NON-BLOCKING)
+// SERVO PWM (GPIO7 only)
 // =====================================================
-// Pattern: ON 3s -> OFF 3s -> repeat
-//static bool heater_test_on = false;
-//static absolute_time_t heater_next_change;
+#define SERVO_PIN 7
 
-//void heater_test_service(void) {
-//    if (absolute_time_diff_us(get_absolute_time(), heater_next_change) > 0)
-//        return;
+// --- user-controlled variable (no input code needed) ---
+static volatile float servo_angle_deg = 90.0f;   // set this anywhere: 0..180
 
-//     heater_test_on = !heater_test_on;
-//     heater_set(heater_test_on);
+// Servo timing (typical): 50 Hz, 1.0ms..2.0ms pulse range
+#define SERVO_FREQ_HZ        50.0f
+#define SERVO_MIN_PULSE_US  1000.0f
+#define SERVO_MAX_PULSE_US  2000.0f
+#define SERVO_MIN_ANGLE       0.0f
+#define SERVO_MAX_ANGLE     180.0f
 
-//     printf("HEATER: %s\n", heater_test_on ? "ON" : "OFF");
+static uint servo_slice = 0;
+static uint servo_chan  = 0;
+static uint32_t servo_top = 0;
 
-//     heater_next_change = make_timeout_time_ms(3000);
-// }
-//
+static float clampf(float x, float lo, float hi) {
+    if (x < lo) return lo;
+    if (x > hi) return hi;
+    return x;
+}
+
+void servo_init(void) {
+    gpio_set_function(SERVO_PIN, GPIO_FUNC_PWM);
+
+    servo_slice = pwm_gpio_to_slice_num(SERVO_PIN);
+    servo_chan  = pwm_gpio_to_channel(SERVO_PIN);
+
+    // PWM freq = 125MHz / (div * (TOP+1))
+    // Choose div = 64, compute TOP for 50Hz
+    pwm_config cfg = pwm_get_default_config();
+    pwm_config_set_clkdiv(&cfg, 64.0f);
+
+    servo_top = (uint32_t)(125000000.0f / (64.0f * SERVO_FREQ_HZ)) - 1u;
+    pwm_config_set_wrap(&cfg, servo_top);
+
+    pwm_init(servo_slice, &cfg, true);
+}
+
+void servo_set_angle(float angle_deg) {
+    angle_deg = clampf(angle_deg, SERVO_MIN_ANGLE, SERVO_MAX_ANGLE);
+
+    float t = (angle_deg - SERVO_MIN_ANGLE) / (SERVO_MAX_ANGLE - SERVO_MIN_ANGLE);
+    float pulse_us = SERVO_MIN_PULSE_US + t * (SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US);
+
+    // counts_per_us = (125MHz/div)/1e6 = 125e6/64/1e6 = 1.953125 counts/us
+    float counts_per_us = (125000000.0f / 64.0f) / 1000000.0f;
+    uint16_t level = (uint16_t)(pulse_us * counts_per_us);
+
+    if ((uint32_t)level > servo_top) level = (uint16_t)servo_top;
+    pwm_set_chan_level(servo_slice, servo_chan, level);
+}
+
+// Keep servo updated periodically (cheap & safe)
+static absolute_time_t next_servo_update;
+
+void servo_service(void) {
+    if (absolute_time_diff_us(get_absolute_time(), next_servo_update) > 0)
+        return;
+
+    servo_set_angle(servo_angle_deg);
+    next_servo_update = make_timeout_time_ms(50); // 20 Hz updates
+}
+
+// =====================================================
+// SERVO TEST (TIME-BASED, NON-BLOCKING)
+// =====================================================
+// Sweeps 0 -> 180 -> 0 with pauses.
+// You can comment out servo_test_service() in main if you don't want the test.
+typedef enum {
+    SERVO_TEST_TO_0,
+    SERVO_TEST_HOLD_0,
+    SERVO_TEST_TO_90,
+    SERVO_TEST_HOLD_90,
+    SERVO_TEST_TO_180,
+    SERVO_TEST_HOLD_180
+} ServoTestState;
+
+static ServoTestState servo_test_state = SERVO_TEST_TO_0;
+static absolute_time_t servo_test_next;
+static bool servo_test_enabled = true; // set false to disable test and use servo_angle_deg only
+
+void servo_test_service(void) {
+    if (!servo_test_enabled) return;
+
+    if (absolute_time_diff_us(get_absolute_time(), servo_test_next) > 0)
+        return;
+
+    switch (servo_test_state) {
+        case SERVO_TEST_TO_0:
+            servo_angle_deg = 0.0f;
+            printf("SERVO TEST: -> 0 deg\n");
+            servo_test_state = SERVO_TEST_HOLD_0;
+            servo_test_next = make_timeout_time_ms(1500);
+            break;
+
+        case SERVO_TEST_HOLD_0:
+            servo_test_state = SERVO_TEST_TO_90;
+            servo_test_next = make_timeout_time_ms(500);
+            break;
+
+        case SERVO_TEST_TO_90:
+            servo_angle_deg = 90.0f;
+            printf("SERVO TEST: -> 90 deg\n");
+            servo_test_state = SERVO_TEST_HOLD_90;
+            servo_test_next = make_timeout_time_ms(1500);
+            break;
+
+        case SERVO_TEST_HOLD_90:
+            servo_test_state = SERVO_TEST_TO_180;
+            servo_test_next = make_timeout_time_ms(500);
+            break;
+
+        case SERVO_TEST_TO_180:
+            servo_angle_deg = 180.0f;
+            printf("SERVO TEST: -> 180 deg\n");
+            servo_test_state = SERVO_TEST_HOLD_180;
+            servo_test_next = make_timeout_time_ms(1500);
+            break;
+
+        case SERVO_TEST_HOLD_180:
+            servo_test_state = SERVO_TEST_TO_0;
+            servo_test_next = make_timeout_time_ms(500);
+            break;
+    }
+}
+
 // =====================================================
 // SYSTEM FSM (sensors printing on schedule)
 // =====================================================
@@ -241,7 +354,7 @@ int main() {
     stdio_init_all();
     sleep_ms(2000);
 
-    printf("Science PCB – FSM + Pump Test + Heater Test\n");
+    printf("Science PCB – FSM + Pump Test + Servo Test\n");
 
     i2c_init(I2C_PORT, 100 * 1000);
     gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
@@ -253,18 +366,28 @@ int main() {
     init_heater();
     init_pump();
 
+    // Servo init (GPIO7)
+    servo_init();
+    servo_set_angle(servo_angle_deg);
+
     // start timers
     pump_next_change   = make_timeout_time_ms(1000);
-    //heater_next_change = make_timeout_time_ms(1000);
     next_sensor_time   = make_timeout_time_ms(SENSOR_PERIOD_MS);
+    next_servo_update  = make_timeout_time_ms(50);
+    servo_test_next    = make_timeout_time_ms(500);
 
     while (true) {
         // keep stepper responsive
         stepper_service_nonblocking();
 
-        // run pump & heater test services
+        // pump direction test
         pump_test_service();
-        //heater_test_service();
+
+        // servo PWM update
+        servo_service();
+
+        // servo sweep test (optional)
+        servo_test_service();
 
         // sensor schedule
         switch (sys_state) {
@@ -283,7 +406,7 @@ int main() {
             case SYS_READ_SENSORS: {
                 float t = read_temperature();
                 float h = read_humidity();
-                printf("Temp: %.2f C | Hum: %.2f %%\n", t, h);
+                printf("Temp: %.2f C | Hum: %.2f %% | Servo: %.1f deg\n", t, h, servo_angle_deg);
                 next_sensor_time = make_timeout_time_ms(SENSOR_PERIOD_MS);
                 sys_state = SYS_IDLE;
                 break;
